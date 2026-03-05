@@ -365,6 +365,16 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
   const [isMuted, setIsMuted] = useState(false);
   const timerRef = useRef<HTMLDivElement>(null);
   
+  // Mobile detection and touch controls
+  const [isMobile, setIsMobile] = useState(false);
+  const [touchControls, setTouchControls] = useState({
+    steering: 0, // -1 for left, 0 for neutral, 1 for right
+    accelerating: false,
+    braking: false,
+    nitro: false,
+    drifting: false,
+  });
+  
   // HUD Helper
   const formatTime = (ms: number) => {
       if (ms === Infinity || !ms) return "--:--";
@@ -387,6 +397,19 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
       return () => {
           audioManager.pauseBackgroundMusic();
       };
+  }, []);
+  
+  // Mobile detection
+  useEffect(() => {
+    const checkMobile = () => {
+      const mobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || 
+                    window.innerWidth <= 768;
+      setIsMobile(mobile);
+    };
+    
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
   }, []);
   
   // Local state for smooth physics
@@ -507,14 +530,37 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
       localPlayer.current.keys[e.code] = false;
     };
 
+    // Touch event handlers for mobile - only for steering area
+    const handleSteeringTouch = (e: TouchEvent) => {
+      e.preventDefault();
+      const steeringRect = (e.target as HTMLElement).getBoundingClientRect();
+      const touch = e.touches[0];
+      const x = touch.clientX - steeringRect.left;
+      const steeringCenter = steeringRect.width / 2;
+      const steeringValue = (x - steeringCenter) / (steeringRect.width / 3); // Normalize to -1 to 1
+      setTouchControls(prev => ({ 
+        ...prev, 
+        steering: Math.max(-1, Math.min(1, steeringValue)) 
+      }));
+    };
+    
+    const handleSteeringEnd = (e: TouchEvent) => {
+      e.preventDefault();
+      setTouchControls(prev => ({ ...prev, steering: 0 }));
+    };
+
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
+    
+    if (isMobile) {
+      // Steering touch events are handled by the steering area element
+    }
 
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, []);
+  }, [isMobile]);
 
   // Physics Loop (runs independently of 3D render loop)
   useEffect(() => {
@@ -526,16 +572,16 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
       const oldY = p.y;
       
       // Acceleration
-      if (p.keys['ArrowUp'] || p.keys['KeyW']) {
+      if (p.keys['ArrowUp'] || p.keys['KeyW'] || touchControls.accelerating) {
         p.speed += ACCELERATION;
-      } else if (p.keys['ArrowDown'] || p.keys['KeyS']) {
+      } else if (p.keys['ArrowDown'] || p.keys['KeyS'] || touchControls.braking) {
         p.speed -= ACCELERATION;
       } else {
         p.speed *= FRICTION;
       }
 
       // Nitro
-      if ((p.keys['ShiftLeft'] || p.keys['ShiftRight']) && p.nitro > 0) {
+      if ((p.keys['ShiftLeft'] || p.keys['ShiftRight'] || touchControls.nitro) && p.nitro > 0) {
           p.speed += NITRO_ACCEL;
           p.nitro = Math.max(0, p.nitro - 1);
       } else {
@@ -545,8 +591,8 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
 
       // Drifting Logic
       // Drift if turning + Spacebar OR turning sharply at high speed
-      const isTurning = p.keys['ArrowLeft'] || p.keys['KeyA'] || p.keys['ArrowRight'] || p.keys['KeyD'];
-      const wantsDrift = p.keys['Space'];
+      const isTurning = p.keys['ArrowLeft'] || p.keys['KeyA'] || p.keys['ArrowRight'] || p.keys['KeyD'] || touchControls.steering !== 0;
+      const wantsDrift = p.keys['Space'] || touchControls.drifting;
       
       if (wantsDrift && isTurning && Math.abs(p.speed) > 1.5) {
           p.drifting = true;
@@ -591,10 +637,10 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
             }
         }
 
-        if (p.keys['ArrowLeft'] || p.keys['KeyA']) {
+        if (p.keys['ArrowLeft'] || p.keys['KeyA'] || touchControls.steering < 0) {
           p.angle -= turn;
         }
-        if (p.keys['ArrowRight'] || p.keys['KeyD']) {
+        if (p.keys['ArrowRight'] || p.keys['KeyD'] || touchControls.steering > 0) {
           p.angle += turn;
         }
       }
@@ -878,6 +924,117 @@ export default function GameCanvas({ initialPlayers }: { initialPlayers?: Record
             </ul>
         </div>
       </div>
+
+      {/* Mobile Touch Controls */}
+      {isMobile && (
+        <>
+          {/* Steering Area - Left Side */}
+          <div 
+            className="absolute left-0 top-0 w-2/5 h-full pointer-events-auto"
+            onTouchStart={handleSteeringTouch}
+            onTouchMove={handleSteeringTouch}
+            onTouchEnd={handleSteeringEnd}
+          >
+            <div className="w-full h-full flex items-center justify-center">
+              <div className="text-white/40 text-lg font-bold bg-black/20 px-4 py-2 rounded-lg backdrop-blur-sm border border-white/10">
+                STEER HERE
+              </div>
+              {/* Steering indicator */}
+              <div 
+                className="absolute w-6 h-6 rounded-full border-3 border-yellow-400 bg-yellow-400/30 transition-all duration-100"
+                style={{
+                  left: `${50 + touchControls.steering * 30}%`,
+                  top: '50%',
+                  transform: 'translate(-50%, -50%)',
+                  opacity: touchControls.steering !== 0 ? 1 : 0
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Control Buttons - Right Side */}
+          <div className="absolute right-4 bottom-20 flex flex-col gap-4 pointer-events-auto">
+            {/* Accelerate Button */}
+            <button
+              className={`w-20 h-20 rounded-full border-4 transition-all duration-150 ${
+                touchControls.accelerating 
+                  ? 'bg-green-500 border-green-400 shadow-[0_0_20px_rgba(34,197,94,0.6)] scale-110' 
+                  : 'bg-green-500/20 border-green-500/50 hover:bg-green-500/30'
+              }`}
+              onTouchStart={(e) => {
+                e.preventDefault();
+                setTouchControls(prev => ({ ...prev, accelerating: true }));
+              }}
+              onTouchEnd={(e) => {
+                e.preventDefault();
+                setTouchControls(prev => ({ ...prev, accelerating: false }));
+              }}
+            >
+              <div className="text-white font-bold text-2xl">↑</div>
+            </button>
+
+            {/* Brake Button */}
+            <button
+              className={`w-20 h-20 rounded-full border-4 transition-all duration-150 ${
+                touchControls.braking 
+                  ? 'bg-red-500 border-red-400 shadow-[0_0_20px_rgba(239,68,68,0.6)] scale-110' 
+                  : 'bg-red-500/20 border-red-500/50 hover:bg-red-500/30'
+              }`}
+              onTouchStart={(e) => {
+                e.preventDefault();
+                setTouchControls(prev => ({ ...prev, braking: true }));
+              }}
+              onTouchEnd={(e) => {
+                e.preventDefault();
+                setTouchControls(prev => ({ ...prev, braking: false }));
+              }}
+            >
+              <div className="text-white font-bold text-2xl">↓</div>
+            </button>
+          </div>
+
+          {/* Nitro and Drift Buttons - Top Right */}
+          <div className="absolute right-4 top-20 flex flex-col gap-3 pointer-events-auto">
+            {/* Nitro Button */}
+            <button
+              className={`w-16 h-16 rounded-full border-4 transition-all duration-150 ${
+                touchControls.nitro 
+                  ? 'bg-blue-500 border-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.6)] scale-110' 
+                  : 'bg-blue-500/20 border-blue-500/50 hover:bg-blue-500/30'
+              }`}
+              onTouchStart={(e) => {
+                e.preventDefault();
+                setTouchControls(prev => ({ ...prev, nitro: true }));
+              }}
+              onTouchEnd={(e) => {
+                e.preventDefault();
+                setTouchControls(prev => ({ ...prev, nitro: false }));
+              }}
+            >
+              <div className="text-white font-bold text-sm">NITRO</div>
+            </button>
+
+            {/* Drift Button */}
+            <button
+              className={`w-16 h-16 rounded-full border-4 transition-all duration-150 ${
+                touchControls.drifting 
+                  ? 'bg-purple-500 border-purple-400 shadow-[0_0_15px_rgba(147,51,234,0.6)] scale-110' 
+                  : 'bg-purple-500/20 border-purple-500/50 hover:bg-purple-500/30'
+              }`}
+              onTouchStart={(e) => {
+                e.preventDefault();
+                setTouchControls(prev => ({ ...prev, drifting: true }));
+              }}
+              onTouchEnd={(e) => {
+                e.preventDefault();
+                setTouchControls(prev => ({ ...prev, drifting: false }));
+              }}
+            >
+              <div className="text-white font-bold text-sm">DRIFT</div>
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
